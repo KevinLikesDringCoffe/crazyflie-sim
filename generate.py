@@ -30,7 +30,10 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
-from tinympc_generator import TinyMPCGenerator, TrajectoryType, SimpleMPCSimulator, ControlMode, create_simulator, NoiseModel
+# Import from refactored modular architecture
+from tinympc_generator import TinyMPCGenerator
+from trajectory import TrajectoryType
+from simulator import ControlMode, SimpleMPCSimulator
 
 # Suppress solver output
 class SuppressOutput:
@@ -99,7 +102,7 @@ def generate_and_verify(traj_name: str, freq: float, horizon: int = 50, control_
     print("\nSimulation Test:")
     print("-" * 20)
     
-    simulator = create_simulator(problem)
+    simulator = SimpleMPCSimulator(problem)
     # Use fixed simulation steps to ensure consistent simulation length
     sim_steps = int(fixed_duration * freq)
     
@@ -333,7 +336,7 @@ def main():
                        help='Save animation as GIF file')
     parser.add_argument('--gif-name', type=str, default='trajectory_animation.gif',
                        help='Name for saved GIF file')
-    parser.add_argument('--max-frames', type=int, default=150,
+    parser.add_argument('--max-frames', type=int, default=50,
                        help='Maximum frames for GIF export (default: 150)')
     parser.add_argument('--sample-rate', type=int, default=None,
                        help='Custom frame sampling rate (if not specified, auto-calculated)')

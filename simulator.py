@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""
+Simulator Module for MPC Controllers
+Provides extensible simulation framework for different control strategies
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import Dict, Optional, Tuple
+from enum import Enum
+from abc import ABC, abstractmethod
+import tinympc
+
+from dynamics import DynamicsModel, NoiseModel
+
+class ControlMode(Enum):
+    """MPC Control Mode"""
+    TRACKING = "tracking"     # Traditional trajectory tracking
+    REGULATOR = "regulator"   # Regulator mode - each step tracks back to origin
+
+class MPCSimulator(ABC):
+    """Abstract base class for MPC simulators"""
+    
+    def __init__(self, dynamics_model: DynamicsModel, 
+                 X_ref: np.ndarray,
+                 horizon: int = 50,
+                 control_mode: ControlMode = ControlMode.TRACKING):
+        self.dynamics_model = dynamics_model
+        self.X_ref = X_ref
+        self.horizon = horizon
+        self.control_mode = control_mode
+        
+        # Generate system matrices
+        self.dt = 1.0 / 50.0  # Default timestep, will be updated
+        self.A, self.B = dynamics_model.generate_system_matrices(50.0)
+        self.Q, self.R = dynamics_model.generate_cost_matrices()
+        self.constraints = dynamics_model.generate_constraints()
+        
+        # History tracking
+        self.x_history = []
+        self.u_history = []
+        self.cost_history = []
+        
+    def set_control_frequency(self, control_freq: float):
+        """Update control frequency and regenerate system matrices"""
+        self.dt = 1.0 / control_freq
+        self.A, self.B = self.dynamics_model.generate_system_matrices(control_freq)
+    
+    @abstractmethod
+    def simulate(self, steps: int = 200, 
+                 initial_state: Optional[np.ndarray] = None,
+                 verbose: bool = True):
+        """Run simulation"""
+        pass
+    
+    def reset(self):
+        """Reset simulation state"""
+        self.x_history = []
+        self.u_history = []
+        self.cost_history = []
+    
+    def get_results(self) -> Dict:
+        """Get simulation results"""
+        x_history = np.array(self.x_history)
+        u_history = np.array(self.u_history) if self.u_history else np.array([])
+        
+        results = {
+            'x_history': x_history,
+            'u_history': u_history,
+            'cost_history': self.cost_history,
+            'dynamics_model': self.dynamics_model,
+            'constraints': self.constraints
+        }
+        
+        if len(x_history) > 0:
+            # Calculate performance metrics
+            results.update(self._calculate_performance_metrics(x_history))
+        
+        return results
+    
+    def _calculate_performance_metrics(self, x_history: np.ndarray) -> Dict:
+        """Calculate performance metrics"""
+        metrics = {}
+        
+        # Position tracking error
+        position_errors = []
+        position_error_components = []
+        
+        for i in range(len(x_history)):
+            if i < self.X_ref.shape[1]:
+                ref_pos = self.X_ref[:3, i]
+            else:
+                ref_pos = self.X_ref[:3, -1]
+            
+            actual_pos = x_history[i, :3]
+            error = np.linalg.norm(actual_pos - ref_pos)
+            position_errors.append(error)
+            
+            error_components = actual_pos - ref_pos
+            position_error_components.append(error_components)
+        
+        position_error_components = np.array(position_error_components)
+        
+        metrics['final_position_error'] = position_errors[-1] if position_errors else 0.0
+        metrics['mean_position_error'] = np.mean(position_errors)
+        metrics['max_position_error'] = np.max(position_errors)
+        metrics['rmse_position_error'] = np.sqrt(np.mean(position_error_components**2))
+        
+        if self.cost_history:
+            metrics['average_cost'] = np.mean(self.cost_history)
+        
+        if self.u_history:
+            u_history = np.array(self.u_history)
+            metrics['max_control_input'] = np.max(np.abs(u_history))
+            
+            # Check constraint violations
+            u_min = self.constraints['u_min']
+            u_max = self.constraints['u_max']
+            violations = np.sum((u_history < u_min) | (u_history > u_max))
+            metrics['constraint_violations'] = violations
+        
+        return metrics
+
+class TinyMPCSimulator(MPCSimulator):
+    """MPC simulator using TinyMPC solver"""
+    
+    def __init__(self, dynamics_model: DynamicsModel, 
+                 X_ref: np.ndarray,
+                 horizon: int = 50,
+                 control_mode: ControlMode = ControlMode.TRACKING):
+        super().__init__(dynamics_model, X_ref, horizon, control_mode)
+        
+        # Setup TinyMPC solver
+        self.mpc = tinympc.TinyMPC()
+        self.mpc.setup(self.A, self.B, self.Q, self.R, self.horizon)
+        
+        # Set bounds
+        if 'u_min' in self.constraints and 'u_max' in self.constraints:
+            self.mpc.u_min = self.constraints['u_min']
+            self.mpc.u_max = self.constraints['u_max']
+        
+        if 'x_min' in self.constraints and 'x_max' in self.constraints:
+            self.mpc.x_min = self.constraints['x_min']
+            self.mpc.x_max = self.constraints['x_max']
+    
+    def set_control_frequency(self, control_freq: float):
+        """Update control frequency and regenerate system matrices"""
+        super().set_control_frequency(control_freq)
+        # Recreate MPC solver with new matrices
+        self.mpc = tinympc.TinyMPC()
+        self.mpc.setup(self.A, self.B, self.Q, self.R, self.horizon)
+        
+        # Reset bounds
+        if 'u_min' in self.constraints and 'u_max' in self.constraints:
+            self.mpc.u_min = self.constraints['u_min']
+            self.mpc.u_max = self.constraints['u_max']
+        
+        if 'x_min' in self.constraints and 'x_max' in self.constraints:
+            self.mpc.x_min = self.constraints['x_min']
+            self.mpc.x_max = self.constraints['x_max']
+    
+    def simulate(self, steps: int = 200, 
+                 initial_state: Optional[np.ndarray] = None,
+                 verbose: bool = True):
+        """Run simulation"""
+        if initial_state is None:
+            # Use realistic initial state noise
+            initial_noise_std = self.dynamics_model.noise_model.get_initial_state_noise_std()
+            state = self.X_ref[:, 0] + np.random.normal(0, initial_noise_std, 12)
+        else:
+            state = initial_state.copy()
+        
+        state[2] = max(state[2], 0.1)  # Keep above ground
+        self.x_current = state
+        self.x_history = [self.x_current.copy()]
+        self.u_history = []
+        self.cost_history = []
+        
+        for step in range(steps):
+            # Get reference trajectory for the horizon
+            if self.control_mode == ControlMode.REGULATOR:
+                X_ref_horizon, U_ref_horizon = self._generate_regulator_references(step)
+            else:
+                X_ref_horizon, U_ref_horizon = self._generate_tracking_references(step)
+            
+            # Set current state and references
+            self.mpc.set_x0(self.x_current)
+            self.mpc.set_x_ref(X_ref_horizon)
+            self.mpc.set_u_ref(U_ref_horizon)
+            
+            # Solve MPC problem
+            try:
+                solution = self.mpc.solve()
+                if solution is not None and 'controls' in solution:
+                    u_control = solution['controls'].flatten()
+                else:
+                    u_control = np.zeros(self.B.shape[1])
+                    if verbose and step < 10:
+                        print(f"Warning: MPC solver failed at step {step}, using zero control")
+            except Exception as e:
+                if verbose and step < 10:
+                    print(f"Warning: MPC solver error at step {step}: {e}")
+                u_control = np.zeros(self.B.shape[1])
+            
+            # Compute cost
+            if self.control_mode == ControlMode.REGULATOR:
+                ref_point = self._get_target_reference_point(step)
+                x_error = self.x_current - ref_point
+            else:
+                ref_start_idx = min(step, self.X_ref.shape[1] - 1)
+                x_error = self.x_current - self.X_ref[:, ref_start_idx]
+            
+            cost = x_error.T @ self.Q @ x_error + u_control.T @ self.R @ u_control
+            self.cost_history.append(cost)
+            
+            # Add noise and simulate forward
+            u_noisy = self._add_actuator_noise(u_control)
+            self.x_current = self._simulate_forward(self.x_current, u_noisy)
+            
+            # Apply state constraints
+            self.x_current = np.clip(self.x_current, 
+                                   self.constraints['x_min'], 
+                                   self.constraints['x_max'])
+            
+            # Record
+            self.x_history.append(self.x_current.copy())
+            self.u_history.append(u_control.copy())
+        
+        if verbose:
+            self._print_results()
+    
+    def _generate_tracking_references(self, step: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Generate references for traditional tracking mode"""
+        ref_start_idx = min(step, self.X_ref.shape[1] - 1)
+        
+        # Create reference trajectory for the horizon
+        X_ref_horizon = np.zeros((self.A.shape[0], self.horizon))
+        U_ref_horizon = np.zeros((self.B.shape[1], self.horizon - 1))
+        
+        for i in range(self.horizon):
+            ref_idx = min(ref_start_idx + i, self.X_ref.shape[1] - 1)
+            X_ref_horizon[:, i] = self.X_ref[:, ref_idx]
+        
+        # Zero reference for control inputs (hover equilibrium)
+        for i in range(self.horizon - 1):
+            U_ref_horizon[:, i] = np.zeros(self.B.shape[1])
+        
+        return X_ref_horizon, U_ref_horizon
+    
+    def _generate_regulator_references(self, step: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Generate references for regulator mode"""
+        ref_start_idx = min(step, self.X_ref.shape[1] - 1)
+        
+        X_ref_horizon = np.zeros((self.A.shape[0], self.horizon))
+        U_ref_horizon = np.zeros((self.B.shape[1], self.horizon - 1))
+        
+        # Target state for this step
+        target_state = self.X_ref[:, min(ref_start_idx, self.X_ref.shape[1] - 1)]
+        
+        # Generate trajectory from current state to target
+        for i in range(self.horizon):
+            alpha = min(i / (self.horizon - 1), 1.0) if self.horizon > 1 else 1.0
+            X_ref_horizon[:, i] = (1 - alpha) * self.x_current + alpha * target_state
+        
+        # Zero reference for control inputs
+        for i in range(self.horizon - 1):
+            U_ref_horizon[:, i] = np.zeros(self.B.shape[1])
+        
+        return X_ref_horizon, U_ref_horizon
+    
+    def _get_target_reference_point(self, step: int) -> np.ndarray:
+        """Get the target reference point for current step"""
+        ref_idx = min(step, self.X_ref.shape[1] - 1)
+        return self.X_ref[:, ref_idx]
+    
+    def _add_actuator_noise(self, u_control: np.ndarray) -> np.ndarray:
+        """Add actuator noise to control inputs"""
+        actuator_noise = np.random.normal(0, self.dynamics_model.noise_model.thrust_noise_std, 
+                                        len(u_control))
+        return u_control * (1 + actuator_noise)
+    
+    def _simulate_forward(self, x_current: np.ndarray, u_control: np.ndarray) -> np.ndarray:
+        """Simulate system forward one time step"""
+        # Add process noise
+        process_noise_std = self.dynamics_model.noise_model.get_state_noise_std(self.dt)
+        process_noise = np.random.normal(0, process_noise_std, len(x_current))
+        
+        # Add gravity disturbance
+        gravity_disturbance = self.dynamics_model.gravity_disturbance
+        
+        # Forward simulation
+        x_next = self.A @ x_current + self.B @ u_control + process_noise + gravity_disturbance
+        
+        return x_next
+    
+    def _print_results(self):
+        """Print simulation results"""
+        metrics = self._calculate_performance_metrics(np.array(self.x_history))
+        
+        print("Simulation Results:")
+        print(f"  Final position error: {metrics['final_position_error']:.4f} m")
+        print(f"  Average cost: {metrics['average_cost']:.3f}")
+        print(f"  Max control input: {metrics['max_control_input']:.3f}")
+        
+        if metrics['constraint_violations'] == 0:
+            print("  ✓ No constraint violations")
+        else:
+            print(f"  ✗ {metrics['constraint_violations']} constraint violations")
+        
+        # Generate plots
+        self.plot_results()
+        
+        print(f"  Plot saved as 'simulation_results.png'")
+        print(f"  Mean position error: {metrics['mean_position_error']:.4f} m")
+        print(f"  RMSE position error: {metrics['rmse_position_error']:.4f} m")
+        print(f"  Max position error: {metrics['max_position_error']:.4f} m")
+    
+    def plot_results(self, save_filename: str = 'simulation_results.png'):
+        """Plot simulation results"""
+        x_history = np.array(self.x_history)
+        
+        # Create figure with subplots
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Time arrays
+        t_sim = np.arange(len(x_history)) * self.dt
+        t_ref = np.arange(min(len(x_history), self.X_ref.shape[1])) * self.dt
+        
+        # Plot 1: XY trajectory comparison
+        ax1.plot(self.X_ref[0, :len(t_ref)], self.X_ref[1, :len(t_ref)], 
+                'r--', linewidth=2, label='Reference', alpha=0.8)
+        ax1.plot(x_history[:, 0], x_history[:, 1], 
+                'b-', linewidth=2, label='Actual')
+        ax1.scatter(x_history[0, 0], x_history[0, 1], 
+                   c='green', s=100, marker='o', label='Start', zorder=5)
+        ax1.scatter(x_history[-1, 0], x_history[-1, 1], 
+                   c='red', s=100, marker='s', label='End', zorder=5)
+        
+        ax1.set_xlabel('X Position (m)')
+        ax1.set_ylabel('Y Position (m)')
+        ax1.set_title('Trajectory Tracking (XY View)')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        ax1.axis('equal')
+        
+        # Plot 2: Position error over time
+        position_errors = []
+        position_error_components = []
+        
+        for i in range(len(x_history)):
+            if i < self.X_ref.shape[1]:
+                ref_pos = self.X_ref[:3, i]
+            else:
+                ref_pos = self.X_ref[:3, -1]
+            
+            actual_pos = x_history[i, :3]
+            error = np.linalg.norm(actual_pos - ref_pos)
+            position_errors.append(error)
+            
+            error_components = actual_pos - ref_pos
+            position_error_components.append(error_components)
+        
+        ax2.plot(t_sim, position_errors, 'b-', linewidth=2, label='Position Error')
+        ax2.set_xlabel('Time (s)')
+        ax2.set_ylabel('Position Error (m)')
+        ax2.set_title('Position Tracking Error vs Time')
+        ax2.grid(True, alpha=0.3)
+        
+        # Add statistics
+        mean_error = np.mean(position_errors)
+        max_error = np.max(position_errors)
+        
+        ax2.axhline(y=mean_error, color='orange', linestyle='--', alpha=0.7, 
+                   label=f'Mean: {mean_error:.3f} m')
+        ax2.axhline(y=max_error, color='red', linestyle='--', alpha=0.7, 
+                   label=f'Max: {max_error:.3f} m')
+        ax2.legend()
+        
+        plt.tight_layout()
+        plt.savefig(save_filename, dpi=300, bbox_inches='tight')
+        plt.show()
+
+def create_simulator(dynamics_model: DynamicsModel,
+                    X_ref: np.ndarray,
+                    horizon: int = 50,
+                    control_mode: ControlMode = ControlMode.TRACKING,
+                    solver_type: str = "tinympc") -> MPCSimulator:
+    """Factory function to create MPC simulators
+    
+    Args:
+        dynamics_model: Dynamics model instance
+        X_ref: Reference trajectory
+        horizon: MPC horizon
+        control_mode: Control mode (tracking or regulator)
+        solver_type: Type of solver to use
+    
+    Returns:
+        MPCSimulator instance
+    """
+    if solver_type == "tinympc":
+        return TinyMPCSimulator(dynamics_model, X_ref, horizon, control_mode)
+    else:
+        raise ValueError(f"Unknown solver type: {solver_type}")
+
+# Legacy compatibility functions for existing code
+class SimpleMPCSimulator(TinyMPCSimulator):
+    """Legacy compatibility class"""
+    
+    def __init__(self, problem: Dict):
+        # Extract parameters from problem dictionary (legacy format)
+        dynamics_model = problem.get('dynamics_model')
+        if dynamics_model is None:
+            # Create dynamics model from legacy problem format
+            from dynamics import LinearizedQuadcopterDynamics, CrazyflieParams
+            params = problem.get('params', CrazyflieParams())
+            noise_model = problem.get('noise_model')
+            dynamics_model = LinearizedQuadcopterDynamics(params, noise_model)
+            
+            # Set gravity disturbance if available
+            gravity_disturbance = problem['system'].get('gravity_disturbance', np.zeros(12))
+            dynamics_model._gravity_disturbance = gravity_disturbance
+        
+        X_ref = problem['trajectory']['X_ref']
+        horizon = problem['horizon']
+        control_mode = problem.get('control_mode', ControlMode.TRACKING)
+        
+        super().__init__(dynamics_model, X_ref, horizon, control_mode)
+        
+        # Set control frequency from problem
+        control_freq = problem['system']['control_freq']
+        self.set_control_frequency(control_freq)
+
+class RegulatorMPCSimulator(SimpleMPCSimulator):
+    """Legacy compatibility class for regulator mode"""
+    
+    def __init__(self, problem: Dict):
+        # Force regulator mode
+        problem['control_mode'] = ControlMode.REGULATOR
+        super().__init__(problem)

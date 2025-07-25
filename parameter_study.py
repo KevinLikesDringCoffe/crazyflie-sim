@@ -12,8 +12,10 @@ import argparse
 import os
 from dataclasses import dataclass
 
-# Import from the main tinympc_generator module  
-from tinympc_generator import TinyMPCGenerator, TrajectoryType, ControlMode, create_simulator
+# Import from refactored modular architecture
+from tinympc_generator import TinyMPCGenerator
+from trajectory import TrajectoryType
+from simulator import ControlMode, SimpleMPCSimulator
 
 # Suppress solver output
 class SuppressOutput:
@@ -129,7 +131,7 @@ class ParameterStudy:
                     )
                     
                     # Run simulation with suppressed output
-                    simulator = create_simulator(problem)
+                    simulator = SimpleMPCSimulator(problem)
                     sim_steps = int(duration * freq)
                     with SuppressOutput():
                         simulator.simulate(steps=sim_steps, verbose=False)
