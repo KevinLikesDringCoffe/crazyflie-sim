@@ -29,6 +29,9 @@ Examples:
   
   # Compare software vs hardware solver performance
   python generate.py circle --solver-type software --frequency 100
+  
+  # Use custom bitstream file for hardware solver
+  python generate.py figure8 --solver-type hardware --bitstream-path /path/to/custom.bit
 """
 
 import argparse
@@ -55,7 +58,7 @@ class SuppressOutput:
         os.close(self.null_fd)
         os.close(self.save_fd)
 
-def generate_and_verify(traj_name: str, freq: float, horizon: int = 50, control_mode: ControlMode = ControlMode.TRACKING, random_seed: int = 42, solver_type: str = "auto"):
+def generate_and_verify(traj_name: str, freq: float, horizon: int = 50, control_mode: ControlMode = ControlMode.TRACKING, random_seed: int = 42, solver_type: str = "auto", bitstream_path: str = None):
     """Generate parameters and verify"""
     
     # Trajectory mapping
@@ -108,7 +111,7 @@ def generate_and_verify(traj_name: str, freq: float, horizon: int = 50, control_
     print("\nSimulation Test:")
     print("-" * 20)
     
-    simulator = SimpleMPCSimulator(problem, solver_type)
+    simulator = SimpleMPCSimulator(problem, solver_type, bitstream_path)
     # Use fixed simulation steps to ensure consistent simulation length
     sim_steps = int(fixed_duration * freq)
     
@@ -350,6 +353,8 @@ def main():
                        help='Random seed for reproducibility (default: 42)')
     parser.add_argument('--solver-type', choices=['auto', 'software', 'hardware'], default='auto',
                        help='MPC solver type: auto (default), software, or hardware')
+    parser.add_argument('--bitstream-path', type=str, default=None,
+                       help='Path to FPGA bitstream file (.bit) for hardware solver (optional)')
     
     args = parser.parse_args()
     
@@ -358,7 +363,7 @@ def main():
     horizon = args.horizon
     control_mode = ControlMode.REGULATOR if args.mode == 'regulator' else ControlMode.TRACKING
     
-    problem, simulator = generate_and_verify(traj_name, freq, horizon, control_mode, args.seed, args.solver_type)
+    problem, simulator = generate_and_verify(traj_name, freq, horizon, control_mode, args.seed, args.solver_type, args.bitstream_path)
     
     if problem and simulator:
         print(f"\nSuccess! Generated {traj_name} trajectory parameters at {freq} Hz with horizon {horizon}")

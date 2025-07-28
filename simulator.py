@@ -183,8 +183,12 @@ class TinyMPCSimulator(MPCSimulator):
                  X_ref: np.ndarray,
                  horizon: int = 50,
                  control_mode: ControlMode = ControlMode.TRACKING,
-                 solver_type: str = "auto"):
+                 solver_type: str = "auto",
+                 bitstream_path: str = None):
         super().__init__(dynamics_model, X_ref, horizon, control_mode)
+        
+        # Store bitstream path for hardware solver
+        self.bitstream_path = bitstream_path
         
         # Auto-select solver type if requested
         if solver_type == "auto":
@@ -225,17 +229,23 @@ class TinyMPCSimulator(MPCSimulator):
                 # Try to import and use hardware solver
                 from hw_interface import MPCSolver
                 
+                # Use custom bitstream path if provided, otherwise use default
+                overlay_path = self.bitstream_path if self.bitstream_path else self.HARDWARE_CONFIG['overlay_path']
+                
                 self.mpc = MPCSolver(
-                    driver_or_path=self.HARDWARE_CONFIG['overlay_path'],
+                    driver_or_path=overlay_path,
                     ip_name=self.HARDWARE_CONFIG['ip_name'],
                     nx=12, nu=4, n_horizon=self.horizon,
                     clock_frequency_mhz=self.HARDWARE_CONFIG['clock_frequency_mhz']
                 )
                 
                 print(f"✓ Hardware MPC solver initialized successfully")
-                print(f"  Bitstream: {self.HARDWARE_CONFIG['overlay_path']}")
+                print(f"  Bitstream: {overlay_path}")
                 print(f"  IP core: {self.HARDWARE_CONFIG['ip_name']}")
                 print(f"  Horizon: {self.horizon}")
+                
+                if self.bitstream_path:
+                    print(f"  Using custom bitstream path: {self.bitstream_path}")
                 
             except ImportError as e:
                 print(f"⚠ Hardware solver not available: {e}")
@@ -560,7 +570,8 @@ def create_simulator(dynamics_model: DynamicsModel,
                     horizon: int = 50,
                     control_mode: ControlMode = ControlMode.TRACKING,
                     solver_type: str = "tinympc",
-                    mpc_solver_type: str = "auto") -> MPCSimulator:
+                    mpc_solver_type: str = "auto",
+                    bitstream_path: str = None) -> MPCSimulator:
     """Factory function to create MPC simulators
     
     Args:
@@ -569,13 +580,14 @@ def create_simulator(dynamics_model: DynamicsModel,
         horizon: MPC horizon
         control_mode: Control mode (tracking or regulator)
         solver_type: Type of solver to use (legacy parameter, kept for compatibility)
-        mpc_solver_type: MPC solver type ("software" or "hardware")
+        mpc_solver_type: MPC solver type ("auto", "software" or "hardware")
+        bitstream_path: Path to FPGA bitstream file for hardware solver
     
     Returns:
         MPCSimulator instance
     """
     if solver_type == "tinympc":
-        return TinyMPCSimulator(dynamics_model, X_ref, horizon, control_mode, mpc_solver_type)
+        return TinyMPCSimulator(dynamics_model, X_ref, horizon, control_mode, mpc_solver_type, bitstream_path)
     else:
         raise ValueError(f"Unknown solver type: {solver_type}")
 
@@ -583,7 +595,7 @@ def create_simulator(dynamics_model: DynamicsModel,
 class SimpleMPCSimulator(TinyMPCSimulator):
     """Legacy compatibility class"""
     
-    def __init__(self, problem: Dict, solver_type: str = "auto"):
+    def __init__(self, problem: Dict, solver_type: str = "auto", bitstream_path: str = None):
         # Extract parameters from problem dictionary (legacy format)
         dynamics_model = problem.get('dynamics_model')
         if dynamics_model is None:
@@ -601,7 +613,7 @@ class SimpleMPCSimulator(TinyMPCSimulator):
         horizon = problem['horizon']
         control_mode = problem.get('control_mode', ControlMode.TRACKING)
         
-        super().__init__(dynamics_model, X_ref, horizon, control_mode, solver_type)
+        super().__init__(dynamics_model, X_ref, horizon, control_mode, solver_type, bitstream_path)
         
         # Set control frequency from problem
         control_freq = problem['system']['control_freq']
@@ -610,7 +622,7 @@ class SimpleMPCSimulator(TinyMPCSimulator):
 class RegulatorMPCSimulator(SimpleMPCSimulator):
     """Legacy compatibility class for regulator mode"""
     
-    def __init__(self, problem: Dict, solver_type: str = "auto"):
+    def __init__(self, problem: Dict, solver_type: str = "auto", bitstream_path: str = None):
         # Force regulator mode
         problem['control_mode'] = ControlMode.REGULATOR
-        super().__init__(problem, solver_type)
+        super().__init__(problem, solver_type, bitstream_path)
