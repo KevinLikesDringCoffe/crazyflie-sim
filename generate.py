@@ -23,6 +23,12 @@ Examples:
   
   # Generate GIF with custom sampling rate (every 10th frame)
   python generate.py spiral --save-gif --sample-rate 10 --frequency 50
+  
+  # Use hardware solver for acceleration (if available)
+  python generate.py figure8 --solver-type hardware --frequency 200
+  
+  # Compare software vs hardware solver performance
+  python generate.py circle --solver-type software --frequency 100
 """
 
 import argparse
@@ -49,7 +55,7 @@ class SuppressOutput:
         os.close(self.null_fd)
         os.close(self.save_fd)
 
-def generate_and_verify(traj_name: str, freq: float, horizon: int = 50, control_mode: ControlMode = ControlMode.TRACKING, random_seed: int = 42):
+def generate_and_verify(traj_name: str, freq: float, horizon: int = 50, control_mode: ControlMode = ControlMode.TRACKING, random_seed: int = 42, solver_type: str = "software"):
     """Generate parameters and verify"""
     
     # Trajectory mapping
@@ -102,7 +108,7 @@ def generate_and_verify(traj_name: str, freq: float, horizon: int = 50, control_
     print("\nSimulation Test:")
     print("-" * 20)
     
-    simulator = SimpleMPCSimulator(problem)
+    simulator = SimpleMPCSimulator(problem, solver_type)
     # Use fixed simulation steps to ensure consistent simulation length
     sim_steps = int(fixed_duration * freq)
     
@@ -342,6 +348,8 @@ def main():
                        help='Custom frame sampling rate (if not specified, auto-calculated)')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed for reproducibility (default: 42)')
+    parser.add_argument('--solver-type', choices=['software', 'hardware'], default='software',
+                       help='MPC solver type: software (default) or hardware')
     
     args = parser.parse_args()
     
@@ -350,11 +358,12 @@ def main():
     horizon = args.horizon
     control_mode = ControlMode.REGULATOR if args.mode == 'regulator' else ControlMode.TRACKING
     
-    problem, simulator = generate_and_verify(traj_name, freq, horizon, control_mode, args.seed)
+    problem, simulator = generate_and_verify(traj_name, freq, horizon, control_mode, args.seed, args.solver_type)
     
     if problem and simulator:
         print(f"\nSuccess! Generated {traj_name} trajectory parameters at {freq} Hz with horizon {horizon}")
         print(f"Control mode: {control_mode.value}")
+        print(f"Solver type: {args.solver_type}")
         print("Use the returned matrices in your TinyMPC solver.")
         
         # Show animation if requested

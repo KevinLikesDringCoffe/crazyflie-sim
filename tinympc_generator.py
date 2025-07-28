@@ -137,7 +137,8 @@ class TinyMPCGenerator:
         return problem
     
     def create_simulator(self, problem: Dict, 
-                        solver_type: str = "tinympc") -> MPCSimulator:
+                        solver_type: str = "tinympc",
+                        mpc_solver_type: str = "software") -> MPCSimulator:
         """Create simulator instance using modular architecture"""
         dynamics_model = problem.get('dynamics_model', self.dynamics_model)
         X_ref = problem['trajectory']['X_ref']
@@ -149,7 +150,8 @@ class TinyMPCGenerator:
             X_ref=X_ref,
             horizon=horizon,
             control_mode=control_mode,
-            solver_type=solver_type
+            solver_type=solver_type,
+            mpc_solver_type=mpc_solver_type
         )
         
         # Set control frequency
@@ -414,14 +416,26 @@ def main():
         # Verify system
         generator.verify_system(problem)
         
-        # Create and test simulator
-        print("\nTesting Modular Simulator:")
-        simulator = generator.create_simulator(problem)
+        # Create and test simulator with software solver
+        print("\nTesting Software Simulator:")
+        simulator = generator.create_simulator(problem, mpc_solver_type="software")
         simulator.simulate(steps=50, verbose=False)
         
         results = simulator.get_results()
         print(f"  Final position error: {results['final_position_error']:.4f} m")
         print(f"  Mean position error: {results['mean_position_error']:.4f} m")
+        
+        # Optionally test hardware simulator if available
+        print("\nTesting Hardware Simulator (if available):")
+        try:
+            hw_simulator = generator.create_simulator(problem, mpc_solver_type="hardware")
+            hw_simulator.simulate(steps=50, verbose=False)
+            
+            hw_results = hw_simulator.get_results()
+            print(f"  Hardware - Final position error: {hw_results['final_position_error']:.4f} m")
+            print(f"  Hardware - Mean position error: {hw_results['mean_position_error']:.4f} m")
+        except Exception as e:
+            print(f"  Hardware solver not available: {str(e)[:60]}...")
         
         # Ask to continue
         try:

@@ -10,6 +10,8 @@ from typing import Dict, Optional, Tuple
 from enum import Enum
 from abc import ABC, abstractmethod
 import tinympc
+import sys
+import os
 
 from dynamics import DynamicsModel, NoiseModel
 
@@ -122,15 +124,66 @@ class MPCSimulator(ABC):
         return metrics
 
 class TinyMPCSimulator(MPCSimulator):
-    """MPC simulator using TinyMPC solver"""
+    """MPC simulator using TinyMPC solver (software or hardware)"""
+    
+    # Hardware configuration constants
+    HARDWARE_CONFIG = {
+        'overlay_path': 'tinympc_design.bit',
+        'ip_name': 'tinympc_hls_0',
+        'clock_frequency_mhz': 250
+    }
     
     def __init__(self, dynamics_model: DynamicsModel, 
                  X_ref: np.ndarray,
                  horizon: int = 50,
-                 control_mode: ControlMode = ControlMode.TRACKING):
+                 control_mode: ControlMode = ControlMode.TRACKING,
+                 solver_type: str = "software"):
         super().__init__(dynamics_model, X_ref, horizon, control_mode)
         
-        # Setup TinyMPC solver
+        self.solver_type = solver_type
+        self._setup_solver()
+    
+    def _setup_solver(self):
+        """Setup MPC solver based on solver type"""
+        if self.solver_type == "hardware":
+            try:
+                # Add parent directory to Python path to import hw_interface
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                parent_dir = os.path.dirname(current_dir)
+                if parent_dir not in sys.path:
+                    sys.path.insert(0, parent_dir)
+                
+                # Try to import and use hardware solver
+                from hw_interface import MPCSolver
+                
+                self.mpc = MPCSolver(
+                    driver_or_path=self.HARDWARE_CONFIG['overlay_path'],
+                    ip_name=self.HARDWARE_CONFIG['ip_name'],
+                    nx=12, nu=4, n_horizon=self.horizon,
+                    clock_frequency_mhz=self.HARDWARE_CONFIG['clock_frequency_mhz']
+                )
+                
+                print(f"✓ Hardware MPC solver initialized successfully")
+                print(f"  Bitstream: {self.HARDWARE_CONFIG['overlay_path']}")
+                print(f"  IP core: {self.HARDWARE_CONFIG['ip_name']}")
+                print(f"  Horizon: {self.horizon}")
+                
+            except ImportError as e:
+                print(f"⚠ Hardware solver not available: {e}")
+                print("  Falling back to software solver...")
+                self.solver_type = "software"
+                self._setup_software_solver()
+            except Exception as e:
+                print(f"⚠ Hardware solver initialization failed: {e}")
+                print("  Falling back to software solver...")
+                self.solver_type = "software"
+                self._setup_software_solver()
+        else:
+            self._setup_software_solver()
+    
+    def _setup_software_solver(self):
+        """Setup software TinyMPC solver"""
+        # Setup software TinyMPC solver
         self.mpc = tinympc.TinyMPC()
         self.mpc.setup(self.A, self.B, self.Q, self.R, self.horizon)
         
@@ -146,18 +199,31 @@ class TinyMPCSimulator(MPCSimulator):
     def set_control_frequency(self, control_freq: float):
         """Update control frequency and regenerate system matrices"""
         super().set_control_frequency(control_freq)
-        # Recreate MPC solver with new matrices
-        self.mpc = tinympc.TinyMPC()
-        self.mpc.setup(self.A, self.B, self.Q, self.R, self.horizon)
         
-        # Reset bounds
-        if 'u_min' in self.constraints and 'u_max' in self.constraints:
-            self.mpc.u_min = self.constraints['u_min']
-            self.mpc.u_max = self.constraints['u_max']
-        
-        if 'x_min' in self.constraints and 'x_max' in self.constraints:
-            self.mpc.x_min = self.constraints['x_min']
-            self.mpc.x_max = self.constraints['x_max']
+        # Recreate solver with new matrices
+        if self.solver_type == "software":
+            # Recreate software MPC solver with new matrices
+            self.mpc = tinympc.TinyMPC()
+            self.mpc.setup(self.A, self.B, self.Q, self.R, self.horizon)
+            
+            # Reset bounds
+            if 'u_min' in self.constraints and 'u_max' in self.constraints:
+                self.mpc.u_min = self.constraints['u_min']
+                self.mpc.u_max = self.constraints['u_max']
+            
+            if 'x_min' in self.constraints and 'x_max' in self.constraints:
+                self.mpc.x_min = self.constraints['x_min']
+                self.mpc.x_max = self.constraints['x_max']
+        else:
+            # Hardware solver matrices are hardcoded in hardware
+            # No need to recreate, but we can update clock frequency if needed
+            try:
+                if hasattr(self.mpc, 'set_clock_frequency'):
+                    # Optionally adjust clock frequency based on control frequency
+                    # Keep default for now
+                    pass
+            except:
+                pass
     
     def simulate(self, steps: int = 200, 
                  initial_state: Optional[np.ndarray] = None,
@@ -183,20 +249,31 @@ class TinyMPCSimulator(MPCSimulator):
             else:
                 X_ref_horizon, U_ref_horizon = self._generate_tracking_references(step)
             
-            # Set current state and references
-            self.mpc.set_x0(self.x_current)
-            self.mpc.set_x_ref(X_ref_horizon)
-            self.mpc.set_u_ref(U_ref_horizon)
-            
             # Solve MPC problem
             try:
-                solution = self.mpc.solve()
-                if solution is not None and 'controls' in solution:
-                    u_control = solution['controls'].flatten()
+                if self.solver_type == "hardware":
+                    # Hardware solver expects direct solve call with parameters
+                    solution = self.mpc.solve(self.x_current, X_ref_horizon.T, U_ref_horizon.T)
+                    if solution is not None and 'controls' in solution:
+                        u_control = solution['controls'][0] if len(solution['controls']) > 0 else np.zeros(self.B.shape[1])
+                    else:
+                        u_control = np.zeros(self.B.shape[1])
+                        if verbose and step < 10:
+                            print(f"Warning: Hardware MPC solver failed at step {step}, using zero control")
                 else:
-                    u_control = np.zeros(self.B.shape[1])
-                    if verbose and step < 10:
-                        print(f"Warning: MPC solver failed at step {step}, using zero control")
+                    # Software solver uses set/solve pattern
+                    self.mpc.set_x0(self.x_current)
+                    self.mpc.set_x_ref(X_ref_horizon)
+                    self.mpc.set_u_ref(U_ref_horizon)
+                    
+                    solution = self.mpc.solve()
+                    if solution is not None and 'controls' in solution:
+                        u_control = solution['controls'].flatten()
+                    else:
+                        u_control = np.zeros(self.B.shape[1])
+                        if verbose and step < 10:
+                            print(f"Warning: Software MPC solver failed at step {step}, using zero control")
+                            
             except Exception as e:
                 if verbose and step < 10:
                     print(f"Warning: MPC solver error at step {step}: {e}")
@@ -384,7 +461,8 @@ def create_simulator(dynamics_model: DynamicsModel,
                     X_ref: np.ndarray,
                     horizon: int = 50,
                     control_mode: ControlMode = ControlMode.TRACKING,
-                    solver_type: str = "tinympc") -> MPCSimulator:
+                    solver_type: str = "tinympc",
+                    mpc_solver_type: str = "software") -> MPCSimulator:
     """Factory function to create MPC simulators
     
     Args:
@@ -392,13 +470,14 @@ def create_simulator(dynamics_model: DynamicsModel,
         X_ref: Reference trajectory
         horizon: MPC horizon
         control_mode: Control mode (tracking or regulator)
-        solver_type: Type of solver to use
+        solver_type: Type of solver to use (legacy parameter, kept for compatibility)
+        mpc_solver_type: MPC solver type ("software" or "hardware")
     
     Returns:
         MPCSimulator instance
     """
     if solver_type == "tinympc":
-        return TinyMPCSimulator(dynamics_model, X_ref, horizon, control_mode)
+        return TinyMPCSimulator(dynamics_model, X_ref, horizon, control_mode, mpc_solver_type)
     else:
         raise ValueError(f"Unknown solver type: {solver_type}")
 
@@ -406,7 +485,7 @@ def create_simulator(dynamics_model: DynamicsModel,
 class SimpleMPCSimulator(TinyMPCSimulator):
     """Legacy compatibility class"""
     
-    def __init__(self, problem: Dict):
+    def __init__(self, problem: Dict, solver_type: str = "software"):
         # Extract parameters from problem dictionary (legacy format)
         dynamics_model = problem.get('dynamics_model')
         if dynamics_model is None:
@@ -424,7 +503,7 @@ class SimpleMPCSimulator(TinyMPCSimulator):
         horizon = problem['horizon']
         control_mode = problem.get('control_mode', ControlMode.TRACKING)
         
-        super().__init__(dynamics_model, X_ref, horizon, control_mode)
+        super().__init__(dynamics_model, X_ref, horizon, control_mode, solver_type)
         
         # Set control frequency from problem
         control_freq = problem['system']['control_freq']
@@ -433,7 +512,7 @@ class SimpleMPCSimulator(TinyMPCSimulator):
 class RegulatorMPCSimulator(SimpleMPCSimulator):
     """Legacy compatibility class for regulator mode"""
     
-    def __init__(self, problem: Dict):
+    def __init__(self, problem: Dict, solver_type: str = "software"):
         # Force regulator mode
         problem['control_mode'] = ControlMode.REGULATOR
-        super().__init__(problem)
+        super().__init__(problem, solver_type)
