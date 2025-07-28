@@ -6,6 +6,8 @@ Ensures complete consistency with generate.py implementation
 """
 
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for server environments
 import matplotlib.pyplot as plt
 from typing import Optional, Dict, Tuple, List
 import argparse
@@ -315,9 +317,14 @@ class ParameterStudy:
             if figure_name is None:
                 figure_name = f'parameter_study_{traj_name.lower()}.png'
             plt.savefig(figure_name, dpi=300, bbox_inches='tight')
-            print(f"Figure saved as: {figure_name}")
+            print(f"📊 Figure saved as: {figure_name}")
+        else:
+            # Always save figure in server environment
+            default_filename = f'parameter_study_{traj_name.lower()}.png'
+            plt.savefig(default_filename, dpi=300, bbox_inches='tight')
+            print(f"📊 Figure saved as: {default_filename}")
         
-        plt.show()
+        plt.close()
     
     def analyze_frequency_effects(self, results: Dict) -> None:
         """Analyze frequency effects and detect positive cases"""
@@ -660,9 +667,14 @@ class ParameterStudy:
             if figure_name is None:
                 figure_name = f'comprehensive_parameter_study_all_trajectories.png'
             plt.savefig(figure_name, dpi=300, bbox_inches='tight')
-            print(f"Comprehensive figure saved as: {figure_name}")
+            print(f"📊 Comprehensive figure saved as: {figure_name}")
+        else:
+            # Always save figure in server environment
+            default_filename = f'comprehensive_parameter_study_all_trajectories.png'
+            plt.savefig(default_filename, dpi=300, bbox_inches='tight')
+            print(f"📊 Comprehensive figure saved as: {default_filename}")
         
-        plt.show()
+        plt.close()
     
     def print_comprehensive_summary(self, comprehensive_results: Dict) -> None:
         """Print comprehensive summary across all trajectories"""

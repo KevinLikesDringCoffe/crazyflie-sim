@@ -5,6 +5,8 @@ Generates system matrices, trajectories, and constraints for TinyMPC controller
 """
 
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for server environments
 import matplotlib.pyplot as plt
 from typing import Dict, Tuple, Optional
 from enum import Enum
@@ -302,7 +304,10 @@ class TinyMPCGenerator:
         ax.grid(True)
         
         plt.tight_layout()
-        plt.show()
+        plot_filename = f"{title.lower().replace(' ', '_')}_trajectory.png"
+        plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"📊 Trajectory plot saved as '{plot_filename}'")
     
     def visualize_noise_characteristics(self, control_freq: float = 50.0):
         """Visualize noise characteristics for different control frequencies"""
@@ -375,7 +380,10 @@ class TinyMPCGenerator:
         
         plt.suptitle(f'Noise Characteristics - {self.platform} (Reference: {control_freq} Hz)', fontsize=14)
         plt.tight_layout()
-        plt.show()
+        noise_filename = f"noise_characteristics_{self.platform}_{control_freq}Hz.png"
+        plt.savefig(noise_filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"📊 Noise characteristics plot saved as '{noise_filename}'")
 
 def main():
     """Main function - demo usage with modular architecture"""

@@ -5,6 +5,8 @@ Provides extensible simulation framework for different control strategies
 """
 
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for server environments
 import matplotlib.pyplot as plt
 from typing import Dict, Optional, Tuple
 from enum import Enum
@@ -563,7 +565,8 @@ class TinyMPCSimulator(MPCSimulator):
         
         plt.tight_layout()
         plt.savefig(save_filename, dpi=300, bbox_inches='tight')
-        plt.show()
+        plt.close()  # Close the figure to free memory instead of showing it
+        print(f"  📊 Plot saved as '{save_filename}'")
 
 def create_simulator(dynamics_model: DynamicsModel,
                     X_ref: np.ndarray,

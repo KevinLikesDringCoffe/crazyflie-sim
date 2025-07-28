@@ -37,6 +37,8 @@ Examples:
 import argparse
 import os
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for server environments
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 # Import from refactored modular architecture
@@ -321,8 +323,14 @@ def create_trajectory_animation(problem, simulator, save_gif=False, filename="tr
         print(f"💾 Saving animation as {filename}...")
         ani.save(filename, writer='pillow', fps=20)
         print(f"✅ Animation saved: {filename}")
-    
-    plt.show()
+        plt.close(fig)
+        print(f"📊 Animation completed and saved as '{filename}'")
+    else:
+        # Save static image when not saving GIF
+        static_filename = filename.replace('.gif', '_static.png')
+        plt.savefig(static_filename, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f"📊 Static plot saved as '{static_filename}'")
     
     return ani
 
