@@ -138,7 +138,7 @@ class TinyMPCGenerator:
     
     def create_simulator(self, problem: Dict, 
                         solver_type: str = "tinympc",
-                        mpc_solver_type: str = "software") -> MPCSimulator:
+                        mpc_solver_type: str = "auto") -> MPCSimulator:
         """Create simulator instance using modular architecture"""
         dynamics_model = problem.get('dynamics_model', self.dynamics_model)
         X_ref = problem['trajectory']['X_ref']

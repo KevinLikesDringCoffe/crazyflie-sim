@@ -55,7 +55,7 @@ class SuppressOutput:
         os.close(self.null_fd)
         os.close(self.save_fd)
 
-def generate_and_verify(traj_name: str, freq: float, horizon: int = 50, control_mode: ControlMode = ControlMode.TRACKING, random_seed: int = 42, solver_type: str = "software"):
+def generate_and_verify(traj_name: str, freq: float, horizon: int = 50, control_mode: ControlMode = ControlMode.TRACKING, random_seed: int = 42, solver_type: str = "auto"):
     """Generate parameters and verify"""
     
     # Trajectory mapping
@@ -348,8 +348,8 @@ def main():
                        help='Custom frame sampling rate (if not specified, auto-calculated)')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed for reproducibility (default: 42)')
-    parser.add_argument('--solver-type', choices=['software', 'hardware'], default='software',
-                       help='MPC solver type: software (default) or hardware')
+    parser.add_argument('--solver-type', choices=['auto', 'software', 'hardware'], default='auto',
+                       help='MPC solver type: auto (default), software, or hardware')
     
     args = parser.parse_args()
     

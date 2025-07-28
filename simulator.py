@@ -9,11 +9,57 @@ import matplotlib.pyplot as plt
 from typing import Dict, Optional, Tuple
 from enum import Enum
 from abc import ABC, abstractmethod
-import tinympc
 import sys
 import os
 
+# Try to import tinympc, but don't fail if it's not available
+try:
+    import tinympc
+    TINYMPC_AVAILABLE = True
+except ImportError:
+    TINYMPC_AVAILABLE = False
+    print("⚠ TinyMPC software library not available. Only hardware solver will be supported.")
+
 from dynamics import DynamicsModel, NoiseModel
+
+def check_available_solvers():
+    """Check which MPC solvers are available"""
+    available_solvers = []
+    
+    # Check software solver
+    if TINYMPC_AVAILABLE:
+        available_solvers.append("software")
+    
+    # Check hardware solver
+    try:
+        # Add parent directory to Python path to import hw_interface
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(current_dir)
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
+        
+        from hw_interface import MPCSolver
+        # Try to check if PYNQ is available
+        try:
+            from pynq import Overlay
+            available_solvers.append("hardware")
+        except ImportError:
+            pass  # PYNQ not available, hardware solver not available
+    except ImportError:
+        pass  # hw_interface not available
+    
+    return available_solvers
+
+def get_default_solver_type():
+    """Get the default solver type based on what's available"""
+    available = check_available_solvers()
+    
+    if "software" in available:
+        return "software"
+    elif "hardware" in available:
+        return "hardware"
+    else:
+        return None
 
 class ControlMode(Enum):
     """MPC Control Mode"""
@@ -137,8 +183,31 @@ class TinyMPCSimulator(MPCSimulator):
                  X_ref: np.ndarray,
                  horizon: int = 50,
                  control_mode: ControlMode = ControlMode.TRACKING,
-                 solver_type: str = "software"):
+                 solver_type: str = "auto"):
         super().__init__(dynamics_model, X_ref, horizon, control_mode)
+        
+        # Auto-select solver type if requested
+        if solver_type == "auto":
+            available_solvers = check_available_solvers()
+            if not available_solvers:
+                raise RuntimeError(
+                    "No MPC solvers are available. Please install either:\n"
+                    "1. TinyMPC library for software solver, or\n"
+                    "2. PYNQ library with hw_interface for hardware solver"
+                )
+            
+            # Prefer software solver if available (usually faster for development)
+            if "software" in available_solvers:
+                solver_type = "software"
+                print(f"✓ Auto-selected software solver (available: {available_solvers})")
+            else:
+                solver_type = "hardware"
+                print(f"✓ Auto-selected hardware solver (available: {available_solvers})")
+        
+        # Manual selection with fallback
+        elif solver_type == "software" and not TINYMPC_AVAILABLE:
+            print("⚠ TinyMPC software library not available, switching to hardware solver")
+            solver_type = "hardware"
         
         self.solver_type = solver_type
         self._setup_solver()
@@ -170,19 +239,44 @@ class TinyMPCSimulator(MPCSimulator):
                 
             except ImportError as e:
                 print(f"⚠ Hardware solver not available: {e}")
-                print("  Falling back to software solver...")
-                self.solver_type = "software"
-                self._setup_software_solver()
+                if TINYMPC_AVAILABLE:
+                    print("  Falling back to software solver...")
+                    self.solver_type = "software"
+                    self._setup_software_solver()
+                else:
+                    print("  Cannot fall back to software solver: TinyMPC library not available")
+                    raise RuntimeError(
+                        "Neither hardware nor software MPC solver is available. "
+                        "Please either:\n"
+                        "1. Install PYNQ library and hw_interface for hardware solver, or\n"
+                        "2. Install TinyMPC library for software solver"
+                    )
             except Exception as e:
                 print(f"⚠ Hardware solver initialization failed: {e}")
-                print("  Falling back to software solver...")
-                self.solver_type = "software"
-                self._setup_software_solver()
+                if TINYMPC_AVAILABLE:
+                    print("  Falling back to software solver...")
+                    self.solver_type = "software"
+                    self._setup_software_solver()
+                else:
+                    print("  Cannot fall back to software solver: TinyMPC library not available")
+                    raise RuntimeError(
+                        "Neither hardware nor software MPC solver is available. "
+                        "Please either:\n"
+                        "1. Install PYNQ library and provide hardware bitstream for hardware solver, or\n"
+                        "2. Install TinyMPC library for software solver"
+                    )
         else:
             self._setup_software_solver()
     
     def _setup_software_solver(self):
         """Setup software TinyMPC solver"""
+        if not TINYMPC_AVAILABLE:
+            raise ImportError(
+                "TinyMPC software library is not available. "
+                "Please install TinyMPC or use hardware solver instead. "
+                "To use hardware solver, set solver_type='hardware'."
+            )
+        
         # Setup software TinyMPC solver
         self.mpc = tinympc.TinyMPC()
         self.mpc.setup(self.A, self.B, self.Q, self.R, self.horizon)
@@ -202,6 +296,10 @@ class TinyMPCSimulator(MPCSimulator):
         
         # Recreate solver with new matrices
         if self.solver_type == "software":
+            if not TINYMPC_AVAILABLE:
+                print("⚠ Cannot update control frequency: TinyMPC software library not available")
+                return
+                
             # Recreate software MPC solver with new matrices
             self.mpc = tinympc.TinyMPC()
             self.mpc.setup(self.A, self.B, self.Q, self.R, self.horizon)
@@ -462,7 +560,7 @@ def create_simulator(dynamics_model: DynamicsModel,
                     horizon: int = 50,
                     control_mode: ControlMode = ControlMode.TRACKING,
                     solver_type: str = "tinympc",
-                    mpc_solver_type: str = "software") -> MPCSimulator:
+                    mpc_solver_type: str = "auto") -> MPCSimulator:
     """Factory function to create MPC simulators
     
     Args:
@@ -485,7 +583,7 @@ def create_simulator(dynamics_model: DynamicsModel,
 class SimpleMPCSimulator(TinyMPCSimulator):
     """Legacy compatibility class"""
     
-    def __init__(self, problem: Dict, solver_type: str = "software"):
+    def __init__(self, problem: Dict, solver_type: str = "auto"):
         # Extract parameters from problem dictionary (legacy format)
         dynamics_model = problem.get('dynamics_model')
         if dynamics_model is None:
@@ -512,7 +610,7 @@ class SimpleMPCSimulator(TinyMPCSimulator):
 class RegulatorMPCSimulator(SimpleMPCSimulator):
     """Legacy compatibility class for regulator mode"""
     
-    def __init__(self, problem: Dict, solver_type: str = "software"):
+    def __init__(self, problem: Dict, solver_type: str = "auto"):
         # Force regulator mode
         problem['control_mode'] = ControlMode.REGULATOR
         super().__init__(problem, solver_type)
